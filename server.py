@@ -50,6 +50,15 @@ RAW_OUT = {"jpg", "png"}
 EBOOK_IN = {"epub", "mobi", "azw", "azw3", "fb2", "lit", "pdb", "cbr", "cbz", "prc", "htmlz"}
 EBOOK_OUT = {"epub", "mobi", "azw3", "fb2", "txt", "cbz"}
 
+# Archive -> 7z via p7zip: extract the input, then re-archive as 7z. The browser (archive.ts) only
+# WRITES zip/tar/tgz, so 7z output has to happen server-side.
+SEVENZIP_IN = {"zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz", "cab", "iso"}
+
+# CAD dwg <-> dxf via LibreDWG. ponytail: LibreDWG is partial — some versions/entities fail. We
+# build it and keep the pairs that empirically produce valid output; treat failures as normal
+# conversion errors, not crashes. (dwf is a different Autodesk format LibreDWG can't read.)
+CAD = {("dwg", "dxf"): "dwg2dxf", ("dxf", "dwg"): "dxf2dwg"}
+
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
 
 
@@ -84,6 +93,18 @@ def build_plan(from_ext, to, in_path, work, stem, profile):
     if from_ext in EBOOK_IN and to in EBOOK_OUT and from_ext != to:
         # calibre auto-detects both formats from the file extensions.
         return [["ebook-convert", in_path, out]], out
+
+    if from_ext in SEVENZIP_IN and to == "7z" and from_ext != "7z":
+        # Extract the input into a subdir, then re-archive its contents as 7z. `7z a out.7z ext/.`
+        # archives the folder's contents (not the folder itself). p7zip reads zip/rar/tar/gz/etc.
+        ext_dir = os.path.join(work, "ext")
+        return [
+            ["7z", "x", "-y", "-o%s" % ext_dir, in_path],
+            ["7z", "a", "-t7z", out, os.path.join(ext_dir, ".")],
+        ], out
+
+    if (from_ext, to) in CAD:
+        return [[CAD[(from_ext, to)], in_path, out]], out
 
     return None, None
 
