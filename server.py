@@ -21,13 +21,52 @@ from urllib.parse import unquote
 
 TOKEN = os.environ.get("SHARED_TOKEN", "")
 OUT_ROOT = "/tmp/out"
-# ponytail: whitelist the office formats LibreOffice can write that ConvertAPI can't.
-# Limiting the set stops the endpoint being a general soffice exec surface.
-ALLOWED_TO = {"ppt", "pptx", "doc", "docx", "odp", "odt", "xls", "xlsx", "ods", "rtf"}
-# Legacy binary formats need their export filter named explicitly — bare `--convert-to ppt`
-# gives "no export filter found". Modern/ODF targets work from the extension alone.
+# Engine dispatch by (from_ext, to). Each (from,to) either maps to a valid plan or is rejected —
+# the plan itself is the allowlist, so the endpoint is never a general exec surface.
+# ponytail: to add a conversion, extend one of these sets; unlisted pairs 400 automatically.
+
+# Office <-> office via LibreOffice. Legacy binary targets need their export filter named
+# explicitly — bare `--convert-to ppt` gives "no export filter found".
+OFFICE_IN = {"doc", "docx", "odt", "rtf", "ppt", "pptx", "odp", "pps", "ppsx", "potx", "xls", "xlsx", "ods"}
+LO_OUT = {"ppt", "pptx", "doc", "docx", "odp", "odt", "xls", "xlsx", "ods", "rtf"}
 FILTERS = {"ppt": "MS PowerPoint 97", "doc": "MS Word 97", "xls": "MS Excel 97"}
+
+# Vector/legacy drawing -> svg, also via LibreOffice Draw.
+SVG_IN = {"wmf", "emf", "cdr"}
+
+# Video containers -> modern containers via ffmpeg. ffmpeg reports per-file failure for codecs
+# it can't decode (some rmvb/swf/wtv), which surfaces as a normal conversion error.
+VIDEO_IN = {"ts", "vob", "mpeg", "mpg", "rmvb", "m2ts", "mxf", "swf", "wtv", "3gp", "flv", "ogv", "mp4", "webm", "mkv", "mov", "avi"}
+VIDEO_OUT = {"mp4", "webm", "mkv", "mov", "avi"}
+
+# RAW photo -> jpg/png: dcraw decodes to TIFF, ImageMagick re-encodes.
+RAW_IN = {"nef", "cr2", "cr3", "arw", "dng", "crw", "raf", "rw2", "orf", "pef", "srw"}
+RAW_OUT = {"jpg", "png"}
+
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def build_plan(from_ext, to, in_path, work, stem, profile):
+    """Return (list_of_argv_steps, final_output_path) or (None, None) if the pair is unsupported.
+    Steps run in sequence; the last step must produce final_output_path."""
+    out = os.path.join(work, "%s.%s" % (stem, to))
+    soffice = ["soffice", "--headless", "--norestore", "-env:UserInstallation=%s" % profile]
+
+    if from_ext in OFFICE_IN and to in LO_OUT and from_ext != to:
+        arg = "%s:%s" % (to, FILTERS[to]) if to in FILTERS else to
+        return [soffice + ["--convert-to", arg, "--outdir", work, in_path]], out
+
+    if from_ext in SVG_IN and to == "svg":
+        return [soffice + ["--convert-to", "svg", "--outdir", work, in_path]], out
+
+    if from_ext in VIDEO_IN and to in VIDEO_OUT and from_ext != to:
+        return [["ffmpeg", "-y", "-i", in_path, out]], out
+
+    if from_ext in RAW_IN and to in RAW_OUT:
+        tiff = os.path.join(work, "%s.tiff" % stem)  # dcraw -T writes <stem>.tiff beside input
+        return [["dcraw", "-T", "-w", in_path], ["convert", tiff, out]], out
+
+    return None, None
 
 
 def sanitize(name, fallback):
@@ -87,10 +126,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         to = str(fields.get("to_value", "")).lower().strip()
+        from_ext = str(fields.get("from_value", "")).lower().strip()
         upload = fields.get("file")
-        if to not in ALLOWED_TO:
-            self._json({"error": "unsupported target '%s'" % to}, 400)
-            return
         if not upload:
             self._json({"error": "no file"}, 400)
             return
@@ -103,22 +140,28 @@ class Handler(BaseHTTPRequestHandler):
         with open(in_path, "wb") as f:
             f.write(upload["data"])
 
+        stem = os.path.splitext(in_name)[0]
+        # Fall back to the input file's own extension if the client didn't send `from`.
+        if not from_ext:
+            from_ext = (os.path.splitext(in_name)[1].lstrip(".") or "").lower()
+
         # Unique profile dir avoids LibreOffice's single-instance lock across concurrent requests.
         profile = "file://%s/profile" % work
-        convert_arg = "%s:%s" % (to, FILTERS[to]) if to in FILTERS else to
+        steps, out_path = build_plan(from_ext, to, in_path, work, stem, profile)
+        if steps is None:
+            self._json({"error": "unsupported conversion %s -> %s" % (from_ext, to)}, 400)
+            return
+
         try:
-            proc = subprocess.run(
-                ["soffice", "--headless", "--norestore", "-env:UserInstallation=%s" % profile,
-                 "--convert-to", convert_arg, "--outdir", work, in_path],
-                capture_output=True, timeout=120,
-            )
+            for argv in steps:
+                proc = subprocess.run(argv, capture_output=True, timeout=120, cwd=work)
         except subprocess.TimeoutExpired:
             self._json({"error": "conversion timed out"}, 504)
             return
+        except FileNotFoundError as e:
+            self._json({"error": "converter tool missing: %s" % e}, 500)
+            return
 
-        stem = os.path.splitext(in_name)[0]
-        out_name = "%s.%s" % (stem, to)
-        out_path = os.path.join(work, out_name)
         if not os.path.isfile(out_path):
             detail = (proc.stderr or proc.stdout or b"").decode(errors="replace")[:200]
             self._json({"error": "conversion failed: %s" % (detail or "no output produced")}, 502)
@@ -127,7 +170,7 @@ class Handler(BaseHTTPRequestHandler):
             os.remove(in_path)
         except OSError:
             pass
-        self._json({"id": job_id, "filename": out_name})
+        self._json({"id": job_id, "filename": os.path.basename(out_path)})
 
     def _parse_multipart(self):
         ctype = self.headers.get("content-type", "")
