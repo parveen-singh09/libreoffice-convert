@@ -42,6 +42,10 @@ def office_ok(f, t):
 VECTOR_IN = {"wmf", "emf", "cdr"}
 VECTOR_OUT = {"svg", "png", "pdf", "jpg"}
 
+# Extra LibreOffice pairs that don't fit the family/vector models but soffice handles directly.
+# ConvertAPI can't do these; LibreOffice can. Keep as explicit (from,to) pairs, not a cross-product.
+EXTRA_LO = {("wpd", "docx"), ("ods", "csv"), ("svg", "eps"), ("eps", "svg")}
+
 # Video containers -> modern containers via ffmpeg. ffmpeg reports per-file failure for codecs
 # it can't decode (some rmvb/swf/wtv), which surfaces as a normal conversion error.
 # swf excluded: ffmpeg can't demux SWF vector animation (verified fail on all real samples).
@@ -85,6 +89,9 @@ def build_plan(from_ext, to, in_path, work, stem, profile):
         return [soffice + ["--convert-to", arg, "--outdir", work, in_path]], out, "chain"
 
     if from_ext in VECTOR_IN and to in VECTOR_OUT:
+        return [soffice + ["--convert-to", to, "--outdir", work, in_path]], out, "chain"
+
+    if (from_ext, to) in EXTRA_LO:
         return [soffice + ["--convert-to", to, "--outdir", work, in_path]], out, "chain"
 
     if from_ext in VIDEO_IN and to in VIDEO_OUT and from_ext != to:
