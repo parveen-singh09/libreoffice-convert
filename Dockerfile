@@ -4,7 +4,7 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
       libreoffice-impress libreoffice-writer libreoffice-calc libreoffice-draw \
       ffmpeg dcraw imagemagick \
-      p7zip-full libredwg-tools \
+      p7zip-full \
       python3 fonts-dejavu fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 

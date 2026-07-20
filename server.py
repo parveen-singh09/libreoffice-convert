@@ -54,10 +54,8 @@ EBOOK_OUT = {"epub", "mobi", "azw3", "fb2", "txt", "cbz"}
 # WRITES zip/tar/tgz, so 7z output has to happen server-side.
 SEVENZIP_IN = {"zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz", "cab", "iso"}
 
-# CAD dwg <-> dxf via LibreDWG. ponytail: LibreDWG is partial — some versions/entities fail. We
-# build it and keep the pairs that empirically produce valid output; treat failures as normal
-# conversion errors, not crashes. (dwf is a different Autodesk format LibreDWG can't read.)
-CAD = {("dwg", "dxf"): "dwg2dxf", ("dxf", "dwg"): "dxf2dwg"}
+# CAD dwg<->dxf: no Debian package ships a working CLI (libredwg-tools doesn't exist in apt).
+# Left unimplemented — see notes. Attempts fall through to "unsupported conversion".
 
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
 
@@ -102,9 +100,6 @@ def build_plan(from_ext, to, in_path, work, stem, profile):
             ["7z", "x", "-y", "-o%s" % ext_dir, in_path],
             ["7z", "a", "-t7z", out, os.path.join(ext_dir, ".")],
         ], out
-
-    if (from_ext, to) in CAD:
-        return [[CAD[(from_ext, to)], in_path, out]], out
 
     return None, None
 
