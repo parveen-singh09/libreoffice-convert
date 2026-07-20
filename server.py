@@ -73,17 +73,19 @@ SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
 
 
 def build_plan(from_ext, to, in_path, work, stem, profile):
-    """Return (list_of_argv_steps, final_output_path) or (None, None) if the pair is unsupported.
-    Steps run in sequence; the last step must produce final_output_path."""
+    """Return (steps, final_output_path, mode) or (None, None, None) if unsupported.
+    mode="chain": every step must succeed in order (each depends on the prior).
+    mode="fallback": try steps in order, use the first that produces output (later steps are
+    alternatives, so an earlier failure is fine)."""
     out = os.path.join(work, "%s.%s" % (stem, to))
     soffice = ["soffice", "--headless", "--norestore", "-env:UserInstallation=%s" % profile]
 
     if office_ok(from_ext, to):
         arg = "%s:%s" % (to, FILTERS[to]) if to in FILTERS else to
-        return [soffice + ["--convert-to", arg, "--outdir", work, in_path]], out
+        return [soffice + ["--convert-to", arg, "--outdir", work, in_path]], out, "chain"
 
     if from_ext in VECTOR_IN and to in VECTOR_OUT:
-        return [soffice + ["--convert-to", to, "--outdir", work, in_path]], out
+        return [soffice + ["--convert-to", to, "--outdir", work, in_path]], out, "chain"
 
     if from_ext in VIDEO_IN and to in VIDEO_OUT and from_ext != to:
         # ponytail: 0.1-CPU free tier can remux but NOT transcode in time. Try stream-copy first
@@ -94,15 +96,15 @@ def build_plan(from_ext, to, in_path, work, stem, profile):
         return [
             ["ffmpeg", "-y", "-i", in_path, "-c", "copy", out],
             ["ffmpeg", "-y", "-i", in_path, "-preset", "ultrafast", out],
-        ], out
+        ], out, "fallback"
 
     if from_ext in RAW_IN and to in RAW_OUT:
         tiff = os.path.join(work, "%s.tiff" % stem)  # dcraw -T writes <stem>.tiff beside input
-        return [["dcraw", "-T", "-w", in_path], ["convert", tiff, out]], out
+        return [["dcraw", "-T", "-w", in_path], ["convert", tiff, out]], out, "chain"
 
     if from_ext in EBOOK_IN and to in EBOOK_OUT and from_ext != to:
         # calibre auto-detects both formats from the file extensions.
-        return [["ebook-convert", in_path, out]], out
+        return [["ebook-convert", in_path, out]], out, "chain"
 
     if from_ext in SEVENZIP_IN and to == "7z" and from_ext != "7z":
         # Extract the input into a subdir, then re-archive its contents as 7z. `7z a out.7z ext/.`
@@ -111,7 +113,7 @@ def build_plan(from_ext, to, in_path, work, stem, profile):
         return [
             ["7z", "x", "-y", "-o%s" % ext_dir, in_path],
             ["7z", "a", "-t7z", out, os.path.join(ext_dir, ".")],
-        ], out
+        ], out, "chain"
 
     if from_ext == "cbr" and to == "cbz":
         # cbr = RAR of images, cbz = ZIP of images. p7zip can't read RAR; use unar to extract
@@ -120,9 +122,9 @@ def build_plan(from_ext, to, in_path, work, stem, profile):
         return [
             ["unar", "-D", "-o", ext_dir, in_path],
             ["7z", "a", "-tzip", out, os.path.join(ext_dir, ".")],
-        ], out
+        ], out, "chain"
 
-    return None, None
+    return None, None, None
 
 
 def sanitize(name, fallback):
@@ -203,7 +205,7 @@ class Handler(BaseHTTPRequestHandler):
 
         # Unique profile dir avoids LibreOffice's single-instance lock across concurrent requests.
         profile = "file://%s/profile" % work
-        steps, out_path = build_plan(from_ext, to, in_path, work, stem, profile)
+        steps, out_path, mode = build_plan(from_ext, to, in_path, work, stem, profile)
         if steps is None:
             self._json({"error": "unsupported conversion %s -> %s" % (from_ext, to)}, 400)
             return
@@ -211,12 +213,17 @@ class Handler(BaseHTTPRequestHandler):
         try:
             for argv in steps:
                 proc = subprocess.run(argv, capture_output=True, timeout=120, cwd=work)
-                # Stop once a step SUCCEEDS and the final output exists. Requiring rc==0 matters for
-                # video: a failed `-c copy` can leave a broken stub, so we must fall through to the
-                # re-encode step instead of serving it. RAW's dcraw step yields a .tiff (not out_path
-                # yet), so the loop naturally continues to the convert step.
-                if proc.returncode == 0 and os.path.isfile(out_path):
-                    break
+                if mode == "chain":
+                    # Each step depends on the prior; abort on the first failure so a later step
+                    # can't "succeed" on missing input (e.g. 7z zipping an empty dir after unar
+                    # failed -> a bogus empty .cbz). Report the failing step's own error.
+                    if proc.returncode != 0:
+                        detail = (proc.stderr or proc.stdout or b"").decode(errors="replace")[:200]
+                        self._json({"error": "conversion failed: %s" % (detail or "step failed")}, 502)
+                        return
+                else:  # fallback: use the first step that produces the output
+                    if proc.returncode == 0 and os.path.isfile(out_path):
+                        break
         except subprocess.TimeoutExpired:
             self._json({"error": "conversion timed out"}, 504)
             return
