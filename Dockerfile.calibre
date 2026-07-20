@@ -1,0 +1,16 @@
+# Separate Render service for ebook conversion. Isolated from the main box so a calibre OOM
+# can't take down the office/video/RAW converters. Same server.py; only calibre's ebook-convert
+# branch runs here (the main box lacks calibre, so ebooks are never routed to it).
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      calibre python3 \
+      fonts-dejavu fonts-liberation \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY server.py .
+
+ENV PORT=7860
+EXPOSE 7860
+CMD ["python3", "server.py"]

@@ -43,6 +43,13 @@ VIDEO_OUT = {"mp4", "mkv", "mov", "avi"}  # webm excluded: VP9 transcode times o
 RAW_IN = {"nef", "cr2", "cr3", "arw", "dng", "crw", "raf", "rw2", "orf", "pef", "srw"}
 RAW_OUT = {"jpg", "png"}
 
+# Ebook <-> ebook via calibre's `ebook-convert` (auto-detects formats by extension). Only runs
+# on the SEPARATE calibre service — the main box doesn't ship calibre, so this branch there just
+# fails "tool missing", which is fine because the Function never routes ebooks to the main box.
+# pdf excluded: calibre's PDF output needs QtWebEngine+display; ConvertAPI already does ebook->pdf.
+EBOOK_IN = {"epub", "mobi", "azw", "azw3", "fb2", "lit", "pdb", "cbr", "cbz", "prc", "htmlz"}
+EBOOK_OUT = {"epub", "mobi", "azw3", "fb2", "txt", "cbz"}
+
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
 
 
@@ -73,6 +80,10 @@ def build_plan(from_ext, to, in_path, work, stem, profile):
     if from_ext in RAW_IN and to in RAW_OUT:
         tiff = os.path.join(work, "%s.tiff" % stem)  # dcraw -T writes <stem>.tiff beside input
         return [["dcraw", "-T", "-w", in_path], ["convert", tiff, out]], out
+
+    if from_ext in EBOOK_IN and to in EBOOK_OUT and from_ext != to:
+        # calibre auto-detects both formats from the file extensions.
+        return [["ebook-convert", in_path, out]], out
 
     return None, None
 
