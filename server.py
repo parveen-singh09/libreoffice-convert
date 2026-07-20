@@ -27,9 +27,16 @@ OUT_ROOT = "/tmp/out"
 
 # Office <-> office via LibreOffice. Legacy binary targets need their export filter named
 # explicitly — bare `--convert-to ppt` gives "no export filter found".
-OFFICE_IN = {"doc", "docx", "odt", "rtf", "ppt", "pptx", "odp", "pps", "ppsx", "potx", "xls", "xlsx", "ods"}
-LO_OUT = {"ppt", "pptx", "doc", "docx", "odp", "odt", "xls", "xlsx", "ods", "rtf"}
+# LibreOffice converts only WITHIN a document family — a slideshow can't become a spreadsheet.
+WORD_IN = {"doc", "docx", "odt", "rtf"}; WORD_OUT = {"doc", "docx", "odt", "rtf"}
+PRES_IN = {"ppt", "pptx", "odp", "pps", "ppsx", "potx"}; PRES_OUT = {"ppt", "pptx", "odp"}
+SHEET_IN = {"xls", "xlsx", "ods"}; SHEET_OUT = {"xls", "xlsx", "ods"}
 FILTERS = {"ppt": "MS PowerPoint 97", "doc": "MS Word 97", "xls": "MS Excel 97"}
+
+
+def office_ok(f, t):
+    return ((f in WORD_IN and t in WORD_OUT) or (f in PRES_IN and t in PRES_OUT)
+            or (f in SHEET_IN and t in SHEET_OUT)) and f != t
 
 # Vector/legacy drawing -> svg, also via LibreOffice Draw.
 SVG_IN = {"wmf", "emf", "cdr"}
@@ -66,7 +73,7 @@ def build_plan(from_ext, to, in_path, work, stem, profile):
     out = os.path.join(work, "%s.%s" % (stem, to))
     soffice = ["soffice", "--headless", "--norestore", "-env:UserInstallation=%s" % profile]
 
-    if from_ext in OFFICE_IN and to in LO_OUT and from_ext != to:
+    if office_ok(from_ext, to):
         arg = "%s:%s" % (to, FILTERS[to]) if to in FILTERS else to
         return [soffice + ["--convert-to", arg, "--outdir", work, in_path]], out
 
