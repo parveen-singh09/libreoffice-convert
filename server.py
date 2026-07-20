@@ -24,6 +24,9 @@ OUT_ROOT = "/tmp/out"
 # ponytail: whitelist the office formats LibreOffice can write that ConvertAPI can't.
 # Limiting the set stops the endpoint being a general soffice exec surface.
 ALLOWED_TO = {"ppt", "pptx", "doc", "docx", "odp", "odt", "xls", "xlsx", "ods", "rtf"}
+# Legacy binary formats need their export filter named explicitly — bare `--convert-to ppt`
+# gives "no export filter found". Modern/ODF targets work from the extension alone.
+FILTERS = {"ppt": "MS PowerPoint 97", "doc": "MS Word 97", "xls": "MS Excel 97"}
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
 
 
@@ -102,10 +105,11 @@ class Handler(BaseHTTPRequestHandler):
 
         # Unique profile dir avoids LibreOffice's single-instance lock across concurrent requests.
         profile = "file://%s/profile" % work
+        convert_arg = "%s:%s" % (to, FILTERS[to]) if to in FILTERS else to
         try:
             proc = subprocess.run(
                 ["soffice", "--headless", "--norestore", "-env:UserInstallation=%s" % profile,
-                 "--convert-to", to, "--outdir", work, in_path],
+                 "--convert-to", convert_arg, "--outdir", work, in_path],
                 capture_output=True, timeout=120,
             )
         except subprocess.TimeoutExpired:
