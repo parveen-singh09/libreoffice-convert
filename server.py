@@ -38,12 +38,14 @@ def office_ok(f, t):
     return ((f in WORD_IN and t in WORD_OUT) or (f in PRES_IN and t in PRES_OUT)
             or (f in SHEET_IN and t in SHEET_OUT)) and f != t
 
-# Vector/legacy drawing -> svg, also via LibreOffice Draw.
-SVG_IN = {"wmf", "emf", "cdr"}
+# Vector/legacy drawing -> raster/vector via LibreOffice Draw (svg/png/pdf/jpg all export cleanly).
+VECTOR_IN = {"wmf", "emf", "cdr"}
+VECTOR_OUT = {"svg", "png", "pdf", "jpg"}
 
 # Video containers -> modern containers via ffmpeg. ffmpeg reports per-file failure for codecs
 # it can't decode (some rmvb/swf/wtv), which surfaces as a normal conversion error.
-VIDEO_IN = {"ts", "vob", "mpeg", "mpg", "rmvb", "m2ts", "mxf", "swf", "wtv", "3gp", "flv", "ogv", "mp4", "webm", "mkv", "mov", "avi"}
+# swf excluded: ffmpeg can't demux SWF vector animation (verified fail on all real samples).
+VIDEO_IN = {"ts", "vob", "mpeg", "mpg", "rmvb", "m2ts", "mxf", "wtv", "3gp", "flv", "ogv", "mp4", "webm", "mkv", "mov", "avi"}
 VIDEO_OUT = {"mp4", "mkv", "mov", "avi"}  # webm excluded: VP9 transcode times out on 0.1-CPU tier
 
 # RAW photo -> jpg/png: dcraw decodes to TIFF, ImageMagick re-encodes.
@@ -77,8 +79,8 @@ def build_plan(from_ext, to, in_path, work, stem, profile):
         arg = "%s:%s" % (to, FILTERS[to]) if to in FILTERS else to
         return [soffice + ["--convert-to", arg, "--outdir", work, in_path]], out
 
-    if from_ext in SVG_IN and to == "svg":
-        return [soffice + ["--convert-to", "svg", "--outdir", work, in_path]], out
+    if from_ext in VECTOR_IN and to in VECTOR_OUT:
+        return [soffice + ["--convert-to", to, "--outdir", work, in_path]], out
 
     if from_ext in VIDEO_IN and to in VIDEO_OUT and from_ext != to:
         # ponytail: 0.1-CPU free tier can remux but NOT transcode in time. Try stream-copy first
