@@ -56,12 +56,15 @@ RAW_OUT = {"jpg", "png"}
 # on the SEPARATE calibre service — the main box doesn't ship calibre, so this branch there just
 # fails "tool missing", which is fine because the Function never routes ebooks to the main box.
 # pdf excluded: calibre's PDF output needs QtWebEngine+display; ConvertAPI already does ebook->pdf.
-EBOOK_IN = {"epub", "mobi", "azw", "azw3", "fb2", "lit", "pdb", "cbr", "cbz", "prc", "htmlz"}
-EBOOK_OUT = {"epub", "mobi", "azw3", "fb2", "txt", "cbz"}
+EBOOK_IN = {"epub", "mobi", "azw", "azw3", "fb2", "lit", "pdb", "prc", "htmlz"}
+EBOOK_OUT = {"epub", "mobi", "azw3", "fb2", "txt"}
 
 # Archive -> 7z via p7zip: extract the input, then re-archive as 7z. The browser (archive.ts) only
 # WRITES zip/tar/tgz, so 7z output has to happen server-side.
 SEVENZIP_IN = {"zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz", "cab", "iso"}
+
+# Comic book: cbr (RAR of images) -> cbz (ZIP of images). p7zip can't read RAR, so use `unar` to
+# extract, then 7z to re-zip. Handled here on the main box, NOT calibre (which crashes on it).
 
 # CAD dwg<->dxf: no Debian package ships a working CLI (libredwg-tools doesn't exist in apt).
 # Left unimplemented — see notes. Attempts fall through to "unsupported conversion".
@@ -108,6 +111,15 @@ def build_plan(from_ext, to, in_path, work, stem, profile):
         return [
             ["7z", "x", "-y", "-o%s" % ext_dir, in_path],
             ["7z", "a", "-t7z", out, os.path.join(ext_dir, ".")],
+        ], out
+
+    if from_ext == "cbr" and to == "cbz":
+        # cbr = RAR of images, cbz = ZIP of images. p7zip can't read RAR; use unar to extract
+        # (-D = no enclosing dir, -o = output dir), then 7z to re-zip the images into a .cbz.
+        ext_dir = os.path.join(work, "ext")
+        return [
+            ["unar", "-D", "-o", ext_dir, in_path],
+            ["7z", "a", "-tzip", out, os.path.join(ext_dir, ".")],
         ], out
 
     return None, None
