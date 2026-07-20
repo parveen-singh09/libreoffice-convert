@@ -37,7 +37,7 @@ SVG_IN = {"wmf", "emf", "cdr"}
 # Video containers -> modern containers via ffmpeg. ffmpeg reports per-file failure for codecs
 # it can't decode (some rmvb/swf/wtv), which surfaces as a normal conversion error.
 VIDEO_IN = {"ts", "vob", "mpeg", "mpg", "rmvb", "m2ts", "mxf", "swf", "wtv", "3gp", "flv", "ogv", "mp4", "webm", "mkv", "mov", "avi"}
-VIDEO_OUT = {"mp4", "webm", "mkv", "mov", "avi"}
+VIDEO_OUT = {"mp4", "mkv", "mov", "avi"}  # webm excluded: VP9 transcode times out on 0.1-CPU tier
 
 # RAW photo -> jpg/png: dcraw decodes to TIFF, ImageMagick re-encodes.
 RAW_IN = {"nef", "cr2", "cr3", "arw", "dng", "crw", "raf", "rw2", "orf", "pef", "srw"}
@@ -60,7 +60,15 @@ def build_plan(from_ext, to, in_path, work, stem, profile):
         return [soffice + ["--convert-to", "svg", "--outdir", work, in_path]], out
 
     if from_ext in VIDEO_IN and to in VIDEO_OUT and from_ext != to:
-        return [["ffmpeg", "-y", "-i", in_path, out]], out
+        # ponytail: 0.1-CPU free tier can remux but NOT transcode in time. Try stream-copy first
+        # (fast, works for the container-swap pairs that were the actual need: ts/vob/mpeg/m2ts->mp4);
+        # fall back to re-encode only if copy fails (incompatible codec). Runner stops at first
+        # step that produces output. webm is deliberately not a target — it always forces VP9
+        # transcode, which times out here. Upgrade path: paid CPU tier if transcode is needed.
+        return [
+            ["ffmpeg", "-y", "-i", in_path, "-c", "copy", out],
+            ["ffmpeg", "-y", "-i", in_path, "-preset", "ultrafast", out],
+        ], out
 
     if from_ext in RAW_IN and to in RAW_OUT:
         tiff = os.path.join(work, "%s.tiff" % stem)  # dcraw -T writes <stem>.tiff beside input
@@ -155,6 +163,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             for argv in steps:
                 proc = subprocess.run(argv, capture_output=True, timeout=120, cwd=work)
+                # Stop once a step SUCCEEDS and the final output exists. Requiring rc==0 matters for
+                # video: a failed `-c copy` can leave a broken stub, so we must fall through to the
+                # re-encode step instead of serving it. RAW's dcraw step yields a .tiff (not out_path
+                # yet), so the loop naturally continues to the convert step.
+                if proc.returncode == 0 and os.path.isfile(out_path):
+                    break
         except subprocess.TimeoutExpired:
             self._json({"error": "conversion timed out"}, 504)
             return
